@@ -63,6 +63,21 @@ func GetPipelinerunDashboardUrl(pipelinerunName string) string {
 		_client.consoleURL, _client.namespace, pipelinerunName)
 }
 
+func ListPendingPipelineRuns() ([]v1beta1.PipelineRun, error) {
+	logging.Info("Listing pending pipelineruns")
+	pipelineRunList, err := _client.clientset.TektonV1beta1().PipelineRuns(_client.namespace).List(context.TODO(), v1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	pendingPipelineRuns := make([]v1beta1.PipelineRun, 0)
+	for _, pipelineRun := range pipelineRunList.Items {
+		if pipelineRun.Spec.Status == "PipelineRunPending" {
+			pendingPipelineRuns = append(pendingPipelineRuns, pipelineRun)
+		}
+	}
+	return pendingPipelineRuns, nil
+}
+
 func ApplyPipelinerun(spec *v1beta1.PipelineRun) (*v1beta1.PipelineRun, error) {
 	if err := checkInitialization(); err != nil {
 		return nil, err
@@ -154,4 +169,13 @@ func fillWorkspaceBinding(workspacesInfo []WorkspaceBinding) {
 		}
 		_client.workspaces = append(_client.workspaces, workspace)
 	}
+}
+
+func UpdatePipelineRunStatus(pendingPipelineRun v1beta1.PipelineRun) {
+	pendingPipelineRun.Spec.Status = ""
+	updatedPipelineRun, err := _client.clientset.TektonV1beta1().PipelineRuns(_client.namespace).Update(context.Background(), &pendingPipelineRun, v1.UpdateOptions{})
+	if err != nil {
+		logging.Errorf("error updating pipelinerun status: %v", err)
+	}
+	logging.Infof("updated pipelinerun status: %v", updatedPipelineRun)
 }

@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/devtools-qe-incubator/eventmanager/pkg/configuration/flows"
 	"github.com/devtools-qe-incubator/eventmanager/pkg/configuration/providers"
@@ -20,6 +21,10 @@ import (
 	"github.com/devtools-qe-incubator/eventmanager/pkg/util"
 	"github.com/devtools-qe-incubator/eventmanager/pkg/util/file"
 	"github.com/devtools-qe-incubator/eventmanager/pkg/util/logging"
+)
+
+const (
+	PipelineCheckInterval = 5 * time.Second
 )
 
 func Initialize(providersFilePath string, flowsFilePath []string) {
@@ -36,6 +41,11 @@ func Initialize(providersFilePath string, flowsFilePath []string) {
 		logging.Error(err)
 		os.Exit(1)
 	}
+	stopChan := make(chan bool)
+	if err := managePipelineRuns(PipelineCheckInterval, stopChan); err != nil {
+		logging.Error(err)
+		os.Exit(1)
+	}
 	if err := status.Init(); err != nil {
 		logging.Error(err)
 		os.Exit(1)
@@ -44,6 +54,36 @@ func Initialize(providersFilePath string, flowsFilePath []string) {
 	waitForStop()
 	stop()
 	os.Exit(0)
+}
+
+func managePipelineRuns(interval time.Duration, stopChan chan bool) error {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			err := listAndSchedulePipelineRuns()
+			if err != nil {
+				logging.Errorf("problem in listing PipelineRuns: %s", err)
+			}
+			logging.Infof("finished listing PipelineRuns")
+		case <-stopChan:
+		}
+	}
+
+	return nil
+}
+
+func listAndSchedulePipelineRuns() error {
+	pendingPipelineRuns, err := tektonClient.ListPendingPipelineRuns()
+	if err != nil {
+		return err
+	}
+	for _, pendingPipelineRun := range pendingPipelineRuns {
+		tektonClient.UpdatePipelineRunStatus(pendingPipelineRun)
+	}
+	return nil
 }
 
 func waitForStop() {
