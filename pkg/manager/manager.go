@@ -2,16 +2,11 @@ package manager
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"golang.org/x/crypto/ssh"
-	"golang.org/x/exp/slices"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/devtools-qe-incubator/eventmanager/pkg/configuration/flows"
 	"github.com/devtools-qe-incubator/eventmanager/pkg/configuration/providers"
@@ -19,6 +14,7 @@ import (
 	"github.com/devtools-qe-incubator/eventmanager/pkg/manager/flows/inputs"
 	"github.com/devtools-qe-incubator/eventmanager/pkg/manager/status"
 
+	"github.com/devtools-qe-incubator/eventmanager/pkg/manager/autoscheduling"
 	tektonClient "github.com/devtools-qe-incubator/eventmanager/pkg/services/cicd/tekton"
 	"github.com/devtools-qe-incubator/eventmanager/pkg/services/messaging/umb"
 	"github.com/devtools-qe-incubator/eventmanager/pkg/services/scm/github"
@@ -26,18 +22,6 @@ import (
 	"github.com/devtools-qe-incubator/eventmanager/pkg/util/file"
 	"github.com/devtools-qe-incubator/eventmanager/pkg/util/logging"
 )
-
-const (
-	DefaultPipelineRunSyncInterval = 5 * time.Second
-)
-
-type BareMetalMachineConfig struct {
-	Username       string `json:"username"`
-	Host           string `json:"host"`
-	PublicKey      string `json:"id_rsa"`
-	Command        string `json:"command"`
-	ExpectedResult string `json:"expectedResult"`
-}
 
 func Initialize(providersFilePath string, flowsFilePath []string) {
 	providers, flows, err := loadFiles(providersFilePath, flowsFilePath)
@@ -54,7 +38,7 @@ func Initialize(providersFilePath string, flowsFilePath []string) {
 		os.Exit(1)
 	}
 	stopChan := make(chan bool)
-	if err := managePipelineRuns(stopChan); err != nil {
+	if err := autoscheduling.ManagePipelineRuns(stopChan); err != nil {
 		logging.Error(err)
 		os.Exit(1)
 	}
@@ -66,132 +50,6 @@ func Initialize(providersFilePath string, flowsFilePath []string) {
 	waitForStop()
 	stop()
 	os.Exit(0)
-}
-
-func managePipelineRuns(stopChan chan bool) error {
-	ticker := time.NewTicker(readPipelineRunSyncInterval())
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			availableMachines := inspectFreeBareMetalMachines()
-			err := listAndSchedulePipelineRuns(availableMachines)
-			if err != nil {
-				logging.Errorf("problem in listing PipelineRuns: %s", err)
-			}
-			logging.Infof("finished listing PipelineRuns")
-		case <-stopChan:
-			logging.Info("Received termination signal, shutting down...")
-		}
-	}
-}
-
-func readPipelineRunSyncInterval() time.Duration {
-	intervalStr := os.Getenv("PIPELINE_RUN_SYNC_INTERVAL")
-	if intervalStr == "" {
-		logging.Infof("PIPELINE_RUN_SYNC_INTERVAL not set, using default interval of 30 seconds")
-		return DefaultPipelineRunSyncInterval
-	}
-
-	interval, err := strconv.Atoi(intervalStr)
-	if err != nil || interval <= 0 {
-		logging.Infof("Invalid PIPELINE_RUN_SYNC_INTERVAL value, using default interval of 30 seconds")
-		return DefaultPipelineRunSyncInterval
-	}
-
-	return time.Duration(interval) * time.Second
-}
-
-func inspectFreeBareMetalMachines() []string {
-	machinesAvailableForUse := make([]string, 0)
-	machinesAsCommaSeparatedStr := os.Getenv("BAREMETAL_MACHINES_LIST")
-	if machinesAsCommaSeparatedStr != "" {
-		machines := strings.Split(machinesAsCommaSeparatedStr, ",")
-		for _, machine := range machines {
-			logging.Infof("Checking machine %v", machine)
-			if isBareMetalMachineAvailable(machine) {
-				machinesAvailableForUse = append(machinesAvailableForUse, machine)
-			}
-		}
-	}
-
-	return machinesAvailableForUse
-}
-
-func isBareMetalMachineAvailable(machine string) bool {
-	bareMetalMachineConfigStr := os.Getenv(machine)
-	if bareMetalMachineConfigStr == "" {
-		return false
-	}
-
-	var config BareMetalMachineConfig
-	err := json.Unmarshal([]byte(bareMetalMachineConfigStr), &config)
-	if err != nil {
-		logging.Errorf("error unmarshaling BareMetalMachineConfig: %v", err)
-		return false
-	}
-	return createSshConnectionAndExecuteCommand(config)
-}
-
-func createSshConnectionAndExecuteCommand(config BareMetalMachineConfig) bool {
-	key, err := base64.StdEncoding.DecodeString(config.PublicKey)
-	if err != nil {
-		logging.Info("Failed to read private key:", err)
-		return false
-	}
-
-	signer, err := ssh.ParsePrivateKey(key)
-	if err != nil {
-		logging.Info("Failed to parse private key:", err)
-		return false
-	}
-
-	connectionConfig := &ssh.ClientConfig{
-		User: config.Username,
-		Auth: []ssh.AuthMethod{
-			ssh.PublicKeys(signer),
-		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         10 * time.Second,
-	}
-
-	conn, err := ssh.Dial("tcp", fmt.Sprintf("%s:22", config.Host), connectionConfig)
-	if err != nil {
-		logging.Info("Failed to connect to server:", err)
-		return false
-	}
-	defer conn.Close()
-
-	session, err := conn.NewSession()
-	if err != nil {
-		logging.Info("Failed to create SSH session:", err)
-		return false
-	}
-	defer session.Close()
-
-	output, err := session.CombinedOutput(config.Command)
-	if err != nil {
-		logging.Info("Failed to execute command:", err)
-		return false
-	}
-
-	logging.Info("Command Output:\n", string(output))
-	return config.ExpectedResult == string(output)
-}
-
-func listAndSchedulePipelineRuns(availableMachines []string) error {
-	pendingPipelineRuns, err := tektonClient.ListPendingPipelineRuns()
-	if err != nil {
-		return err
-	}
-	for _, pendingPipelineRun := range pendingPipelineRuns {
-		targetMachine := pendingPipelineRun.GetLabels()["targetBareMetalMachine"]
-		if slices.Contains(availableMachines, targetMachine) {
-			tektonClient.UpdatePipelineRunStatus(pendingPipelineRun)
-		}
-	}
-	return nil
 }
 
 func waitForStop() {
