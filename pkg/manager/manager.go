@@ -3,6 +3,7 @@ package manager
 import (
 	"encoding/base64"
 	"fmt"
+	"github.com/devtools-qe-incubator/eventmanager/pkg/manager/scheduling/pipelines"
 	"os"
 	"os/signal"
 	"strings"
@@ -14,7 +15,6 @@ import (
 	"github.com/devtools-qe-incubator/eventmanager/pkg/manager/flows/inputs"
 	"github.com/devtools-qe-incubator/eventmanager/pkg/manager/status"
 
-	"github.com/devtools-qe-incubator/eventmanager/pkg/manager/autoscheduling"
 	tektonClient "github.com/devtools-qe-incubator/eventmanager/pkg/services/cicd/tekton"
 	"github.com/devtools-qe-incubator/eventmanager/pkg/services/messaging/umb"
 	"github.com/devtools-qe-incubator/eventmanager/pkg/services/scm/github"
@@ -38,7 +38,7 @@ func Initialize(providersFilePath string, flowsFilePath []string) {
 		os.Exit(1)
 	}
 	stopChan := make(chan bool)
-	if err := autoscheduling.ManagePipelineRuns(stopChan); err != nil {
+	if err := pipelines.ManagePipelineRuns(stopChan); err != nil {
 		logging.Error(err)
 		os.Exit(1)
 	}

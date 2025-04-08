@@ -1,6 +1,7 @@
-package autoscheduling
+package pipelines
 
 import (
+	"github.com/devtools-qe-incubator/eventmanager/pkg/manager/scheduling"
 	tektonClient "github.com/devtools-qe-incubator/eventmanager/pkg/services/cicd/tekton"
 	"github.com/devtools-qe-incubator/eventmanager/pkg/util/logging"
 	"golang.org/x/exp/slices"
@@ -20,7 +21,7 @@ func ManagePipelineRuns(stopChan chan bool) error {
 	for {
 		select {
 		case <-ticker.C:
-			availableMachines := InspectFreeBareMetalMachines()
+			availableMachines := scheduling.InspectFreeBareMetalMachines()
 			err := listAndSchedulePipelineRuns(availableMachines)
 			if err != nil {
 				logging.Errorf("problem in listing PipelineRuns: %s", err)
